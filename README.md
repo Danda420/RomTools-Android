@@ -1,6 +1,10 @@
 # CLI ROM Tools for Android
 ## Android Kitchen written in bash
-BETA
+### Setup ###
+- Download this repository code as zip
+- Extract the RomTools folder inside to any dirs in /data
+- Execute the start script inside that extracted folder via terminal (ofc with su) then choose install tool option
+- After installation is complete, you can just do su -c romtools on terminal to start the tool
 ***
 ### Features ###
 - Unpack and repack super, ext4, erofs.

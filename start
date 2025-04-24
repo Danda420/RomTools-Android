@@ -3,5 +3,5 @@
 script_dir=$(dirname "$(realpath "$0")")
 source $script_dir/tool/functions
 
-chmod -R 777 $script_dir/tool
+chmod -R 755 $script_dir/tool
 start_tools
