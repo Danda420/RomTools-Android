@@ -1,0 +1,3 @@
+#!/data/local/python39/usr/bin/sh
+
+ "/data/local/python39/usr/lib/p7zip/7z" "$@"

@@ -1,0 +1,2246 @@
+#!/system/bin/sh
+DIRTOOLS=$(dirname "$(realpath "$0")")
+DIRSCRIPTS=$DIRTOOLS/tool
+BIN=$DIRSCRIPTS/bin
+PYSCRIPTS=$BIN/py
+DIRIN=$DIRTOOLS/input
+DIROUT=$DIRTOOLS/output
+WORKDIR=$DIRTOOLS/ROM_WORKDIR
+superdir=$WORKDIR/super
+ext4dir=$WORKDIR/EXT4
+erofsdir=$WORKDIR/erofs
+u_bootdir=$WORKDIR/boot
+partitions="system vendor odm product system_ext"
+oplus_partitions="my_bigball my_carrier my_company my_engineering my_heytap my_manifest my_preload my_product my_region my_stock"
+G='\033[1;32m'
+R='\033[1;31m'
+NC='\033[0m'
+LC='\033[1;36m'
+
+busybox() {
+   $BIN/busybox $@
+}
+
+restart_tool() {
+	echo " "
+	while true; do
+	   echo "start tools again? (y/n)"
+	   echo ""; read yn
+	   case $yn in
+		[Yy]* ) start_tools;;
+		[Nn]* ) 
+		clear
+		exit;;   
+		* ) echo "please choose yes or no";;
+	    esac
+	done
+}
+
+banner() {
+	clear
+	echo -e "${LC}+-------------------------+"
+	echo -e "${LC}|  ROM TOOLS FOR ANDROID  |"
+	echo -e "${LC}|        by  Danda        |"
+	echo -e "${LC}+-------------------------+${NC}"
+}
+
+getvalue() { grep "^$1=" "$2" 2>/dev/null | tail -n1 | cut -d= -f2-; }
+
+give_perm() {
+	local partition=$1
+	chown -R $USER:$USER $WORKDIR/$partition > /dev/null 2>&1
+}
+
+restore_perm() {
+	local partition=$1
+	if [[ $(echo $partition | grep "vendor") != "" ]]; then
+		chown -R 0:0 $WORKDIR/$partition/
+		chown -R 0:2000 $WORKDIR/$partition/bin
+		chown 0:2000 $(find $WORKDIR/$partition -type d)
+	elif [[ $(echo $partition | grep "system") != "" ]]; then
+		chown -R 0:0 $WORKDIR/$partition
+		chown -R 0:2000 $WORKDIR/$partition/system/bin
+	else
+		chown -R 0:0 $WORKDIR/$partition
+		chown -R 0:2000 $WORKDIR/$partition/bin
+	fi
+}
+
+setup() {
+	clear
+	if [[ ! -d $WORKDIR ]] && [[ ! -d $DIRIN ]] && [[ ! -d $DIROUT ]]; then
+		mkdir -p $DIRIN \
+		         $DIROUT \
+		         $WORKDIR
+	fi
+}
+
+clean() {
+	clear
+	echo "cleaning..."
+
+	rm -rf $DIRIN \
+	       $DIROUT \
+	       $WORKDIR \
+		   $ABIEBIN/uiderrors \
+		   $ABIEBIN/*.img*
+		   
+	find $DIRSCRIPTS/ -name "__pycache__" -type d -exec rm -rf {} +
+
+	echo -e "${G}Done!${NC}"
+}
+
+file_selector() {
+	local selected_dir=$1
+	local file_extension=$2
+	local message=$3
+	if ls -1 $selected_dir/*$file_extension > /dev/null 2>&1 ; then
+	   ls -1 $selected_dir/*$file_extension | busybox sed 's:.*/::' | $BIN/awk '{print NR ".", $0}'
+	   local nofilesfound=0
+	else
+	   if [[ $file_extension == "" ]]; then
+	      echo -e "${R}No file(s) found in $selected_dir ${NC}"
+	      echo ""
+	   else
+	      echo -e "${R}No file(s) found in $selected_dir with $file_extension file extension ${NC}"
+	      echo ""
+	   fi
+	   local nofilesfound=1
+	fi
+	if [[ $message != "" ]] && [[ $nofilesfound == 0 ]]; then
+	   echo "0. $message"
+	fi
+	echo "x. Back to main menu"
+	read
+	local CHOOSE=$REPLY
+	if [[ $CHOOSE == "0" ]]; then
+	   clear
+	   FILE=$(ls -1 $selected_dir/*$file_extension | busybox sed 's:.*/::' | busybox sed "s/${file_extension}$//")
+	elif [[ $CHOOSE == "x" ]]; then
+	   start_tools
+	elif [[ $CHOOSE == "" ]]; then
+	   clear
+	   banner
+	   echo ""
+	   file_selector $selected_dir $file_extension "$message"
+	else
+	   if [[ $(ls -1 $selected_dir | $BIN/awk '{print NR ".", $0}' | grep -E "\b${CHOOSE}.(\s|$)") == "" ]]; then
+	      clear
+	      banner
+	      echo ""
+	      file_selector $selected_dir $file_extension "$message"
+	   fi
+	   if [[ $file_extension == "" ]]; then
+	      FILE=$(ls -1 $selected_dir | $BIN/awk '{print NR ".", $0}' | grep -E "\b${CHOOSE}.(\s|$)" | $BIN/awk '{print $2}')
+	      clear
+	      echo "Selected: $FILE"
+	   else
+	      local file1=$(ls -1 $selected_dir/*$file_extension | $BIN/awk '{print NR ".", $0}' | grep -E "\b${CHOOSE}.(\s|$)" | $BIN/awk '{print $2}' | busybox sed "s/$file_extension//")
+	      local file2=${file1%/}
+	      local file3=${file2##*/}
+	      FILE=$file3
+	      clear
+	      echo "Selected: ${FILE}${file_extension}"
+	   fi
+	fi
+}
+
+extracted_partition_selector() {
+	local selected_dir=$1
+	local message=$2
+	if ls -1 $selected_dir > /dev/null 2>&1 ; then
+	   ls -1 $selected_dir | grep -v "config" | $BIN/awk '{print NR ".", $0}'
+	   local nofoldersfound=0
+	else
+	   echo -e "${R}No extracted partition(s) found! ${NC}"
+	   echo ""
+	   local nofoldersfound=1
+	fi
+	if [[ $message != "" ]] && [[ $nofoldersfound == 0 ]]; then
+	   echo "0. $message"
+	fi
+	echo "x. Back to main menu"
+	read
+	local CHOOSE=$REPLY
+	if [[ $CHOOSE == "0" ]]; then
+	   clear
+	   FOLDER=$(ls -1 $selected_dir | grep -v "config")
+	elif [[ $CHOOSE == "x" ]]; then
+	   start_tools
+	elif [[ $CHOOSE == "" ]]; then
+	   clear
+	   banner
+	   echo ""
+	   extracted_partition_selector $selected_dir "$message"
+	else
+	   FOLDER=$(ls -1 $selected_dir | grep -v "config" | $BIN/awk '{print NR ".", $0}' | grep -E "\b${CHOOSE}.(\s|$)" | $BIN/awk '{print $2}')
+	   if [[ $FOLDER != "" ]]; then
+	      clear
+	      echo "Selected: $FOLDER"
+	   else
+	      clear
+	      banner
+	      echo ""
+	      extracted_partition_selector $selected_dir "$message"
+	   fi
+	fi
+}
+
+resize_img(){
+	local DIRIMG_RESIZE=$1
+	if [[ $2 == "smallest" ]]; then
+		$BIN/e2fsck -yf $DIRIMG_RESIZE > /dev/null 2>&1
+		$BIN/resize2fs -M $DIRIMG_RESIZE > /dev/null 2>&1
+		$BIN/e2fsck -yf $DIRIMG_RESIZE > /dev/null 2>&1
+	elif [[ $2 == "freespace" ]]; then
+		$BIN/e2fsck -yf $DIRIMG_RESIZE > /dev/null 2>&1
+		$BIN/resize2fs -M $DIRIMG_RESIZE > /dev/null 2>&1
+		$BIN/e2fsck -yf $DIRIMG_RESIZE > /dev/null 2>&1
+		local vsizenow=$(ls -nl $DIRIMG_RESIZE | $BIN/awk '{print $5}')
+		local sizeimg=$((($vsizenow + ${FREESPACE}000000)/1000))K
+		$BIN/resize2fs $DIRIMG_RESIZE $sizeimg > /dev/null 2>&1
+		$BIN/e2fsck -yf $DIRIMG_RESIZE > /dev/null 2>&1
+	fi
+}
+
+patch_merge_fsconf_contexts() {
+	local image=$1
+	sed -i "s#${image}/#system/${image}/#g" $2
+	sed -i "s#/${image}/#/system/${image}/#g" $3
+}
+
+convert_ext4_erofs() {
+	while true; do
+	    echo "Compiling erofs image for old kernel? (Y/N)"
+	    read yn
+	    case $yn in
+		[Yy]* ) 
+		local legacy=1 
+		break;;
+		[Nn]* ) 
+		local legacy=0 
+		break;;
+		* ) echo "Please answer yes or no.";;
+	    esac
+	done
+		
+	while true; do
+	   echo " "
+	   echo "Choose compressor : "
+	   echo " "
+	   echo "1. lz4"
+	   echo "2. lz4hc"
+	   echo "3. lzma"
+	   echo "4. deflate"
+			    
+	   echo ""; read choose
+	   case $choose in
+			    
+		1 ) 
+		local compressor=lz4
+		break;;
+
+		2 ) 
+		local compressor=lz4hc
+		break;;
+			
+		3 )
+		local compressor=lzma
+		break;;
+			
+		4 ) 
+		local compressor=deflate
+		break;;
+
+		* ) echo "please choose one!";;
+	   esac
+	done
+	
+	case $compressor in
+	   "lz4" )
+	      local compression=lz4
+	   ;;
+	   
+	   "lz4hc" )
+	      echo ""
+	      echo "Input erofs compression level (0-12, default is 9)"
+	   ;;
+	   
+	   "lzma" )
+	      echo ""
+	      echo "Input erofs compression level (0-9,100-109. 0-9=normal, 100-109=extreme, default is 6)"
+	   ;;
+		   
+	   "deflate" )
+	      echo ""
+	      echo "Input erofs compression level (0-9, default is 1)"
+	   ;;
+	esac
+		
+	if [[ $compressor != "lz4" ]]; then
+	   echo "Leave it empty if you want the default compression"
+	   read
+	   local erofscomplvl=$REPLY
+		if [[ $erofscomplvl == "" ]]; then
+	      local compression=${compressor}
+		else
+	      local compression=${compressor},${erofscomplvl}
+		fi
+	fi
+	echo " "
+	echo "Starting conversion..."
+	echo ""
+	echo "- Unpacking $image image (ext4)"
+	if [[ -d $ext4dir/$image ]]; then
+		rm -rf $ext4dir/$image $ext4dir/config/$image
+	fi
+	$BIN/python39 $PYSCRIPTS/imgextractor.py $DIRIN/$image.img $ext4dir > /dev/null 2>&1
+	chown -R $USER:$USER $WORKDIR/EXT4
+
+	echo "- Rebuilding $image as erofs image..."
+	if repack_ext4_as_erofs_cmd $image $compression $legacy > /dev/null 2>&1; then
+	   rm -rf $DIRIN/$image.img $ext4dir/$image $ext4dir/config/$image
+	   echo ""
+	   echo -e "${G}Conversion done..."
+	   echo -e "Output : $DIROUT/$image.erofs.img ${NC}"
+	else
+	   echo -e "${R}Conversion Failed!"
+	   echo -e "${NC}"
+	fi
+}
+
+convert_erofs_ext4(){
+	echo " "
+	echo "Starting conversion..."
+	echo ""
+	echo "- Unpacking $image image (erofs)"
+	if [[ -d $erofsdir/$image ]]; then
+		rm -rf $erofsdir/$image $erofsdir/config/${image}_*
+	fi
+	$BIN/erofs.unpack -i $DIRIN/$image.img -o $erofsdir -x > /dev/null 2>&1
+	        
+	echo "- Rebuilding $image as ext4 image..."
+	local foldersize=$(du -s -B1 $erofsdir/$image | $BIN/awk '{print $1}')
+	local SIZE=$(($foldersize + $foldersize * 1/10))
+	if (( $SIZE < 1474560 )); then
+	    local SIZE=`du -sk $erofsdir/$image | $BIN/awk '{$1*=1024;$1=int($1*8);printf $1}'`
+	fi
+	if repack_erofs_as_ext4_cmd $image $SIZE > /dev/null 2>&1; then
+	   resize_img $DIROUT/$image.ext4.img smallest
+	   rm -rf $DIRIN/$image.img $erofsdir/$image $erofsdir/config/${image}_*
+	   echo ""
+	   echo -e "${G}Conversion done..."
+	   echo -e "Output : $DIROUT/$image.ext4.img ${NC}"
+	else
+	   echo -e "${R}Conversion Failed!"
+	   echo -e "${NC}"
+	fi
+}
+
+rebuild_ext4(){
+	echo " "
+	echo "Starting rebuilding..."
+	echo ""
+	echo "- Extracting $partition"
+	mkdir -p $WORKDIR/rebuildimg
+	$BIN/python39 $PYSCRIPTS/imgextractor.py $DIRIN/$partition.img $WORKDIR/rebuildimg > /dev/null 2>&1
+	local foldersize=$(du -s -B1 $WORKDIR/rebuildimg/$partition | $BIN/awk '{print $1}')
+	local SIZE=$(($foldersize + $foldersize * 1/10))
+	if (( $SIZE < 1474560 )); then
+		local SIZE=`du -sk $WORKDIR/rebuildimg/$partition | $BIN/awk '{$1*=1024;$1=int($1*8);printf $1}'`
+	fi
+	echo "- Rebuilding $partition..."
+	if [[ $partition == system ]] || [[ $partition == system_a ]] || [[ $partition == system_b ]]; then
+		local mountpoint=""
+	else
+		local mountpoint=$partition
+	fi
+	if $BIN/make_ext4fs -J -T -1 \
+		   -S "$WORKDIR/rebuildimg/config/$partition/${partition}_file_contexts" \
+		   -C "$WORKDIR/rebuildimg/config/$partition/${partition}_fs_config" \
+		   -l "$SIZE" \
+		   -L "/$mountpoint" \
+		   -a "/$partition" \
+		   "$DIROUT/$partition.img" "$WORKDIR/rebuildimg/$partition" > /dev/null 2>&1; then
+		resize_img $DIROUT/$partition.img smallest
+		rm -rf $DIRIN/$partition.img
+		echo ""
+		echo -e "${G}Rebuild done..."
+		echo -e "Output : $DIROUT/$partition.img ${NC}"
+	else
+		echo -e "${R}Rebuild Failed!"
+		echo -e "${NC}"
+	fi
+	rm -rf $WORKDIR/rebuildimg
+}
+
+rebuild_ext4_single() {
+	clear
+	banner
+	echo " "
+	echo "choose which image you wanted to rebuild"
+	echo " "
+	file_selector $DIRIN ".img" "Rebuild all ext4 image shown above"
+	for partition in $FILE; do
+		if [[ $($BIN/blkid -o value -s TYPE $DIRIN/$partition.img) == ext4 ]]; then
+		  rebuild_ext4
+		else
+		   echo ""
+		   echo -e "${R}$partition.img fs type is $($BIN/blkid -o value -s TYPE $DIRIN/$partition.img), aborting..."
+		   echo -e "${NC}"
+		fi
+	done
+}
+
+datbr_raw() {
+	clear
+	banner
+	echo " "
+	echo "choose which image you wanted to extract"
+	echo " "
+	file_selector $DIRIN ".new.dat.br"
+	local imgname=$FILE
+
+	if [ -f $DIRIN/$imgname.new.dat.br ]; then
+		echo "Unpacking..."
+		echo " "
+		$BIN/brotli -d $DIRIN/$imgname.new.dat.br
+
+		rm -rf $DIRIN/$imgname.new.dat.br
+
+		$BIN/python39 $PYSCRIPTS/sdat2img.py $DIRIN/$imgname.transfer.list $DIRIN/$imgname.new.dat $DIROUT/$imgname.img  > /dev/null 2>&1
+		echo " "
+		echo "Cleaning input folder..."
+
+		echo " "
+		if [[ -f $DIROUT/$imgname.img ]] && [[ $(ls -l $DIROUT/$imgname.img | $BIN/awk '{print $5}') != "0" ]]; then
+		   rm -rf $DIRIN/$imgname.*
+		   echo -e "${G}Done! Output : $DIROUT/$imgname.img ${NC}"
+		else
+		   echo -e "${R}Decompression Failed!"
+		   echo -e "${NC}"
+		fi
+	fi
+}
+
+compress_zstd() {
+	clear
+	banner
+	echo " "
+	echo "choose which file you wanted to compress"
+	echo " "
+	file_selector $DIRIN ""
+	local filename=$FILE
+	
+	if [ -f $DIRIN/$filename ]; then
+		echo " "
+		echo "Input zstd suffix (leave it empty if you want .zst) :"
+		read
+		local ZSTDSUFFIX=.$REPLY
+		if [[ $ZSTDSUFFIX == "." ]]; then
+			local ZSTDSUFFIX=.zst
+		elif [[ $ZSTDSUFFIX == ". " ]]; then
+			local ZSTDSUFFIX=""
+		fi
+		
+		echo " "
+		echo "Input zstd compression lvl (1-19) :"
+		read
+		local ZSTDLVL=$REPLY
+		
+		echo " "
+		echo "Compressing $filename to ${filename}$ZSTDSUFFIX (zstd)"
+		if $BIN/zstd -${ZSTDLVL} -T$(nproc --all) $DIRIN/$filename -o $DIROUT/${filename}$ZSTDSUFFIX; then
+		   rm -rf $DIRIN/$filename
+		   echo " "
+		   echo -e "${G}Done! Output : $DIROUT/${filename}$ZSTDSUFFIX ${NC}"
+		else
+		   echo -e "${R}Compression Failed!"
+		   echo -e "${NC}"
+		fi
+	fi	
+}
+
+decompress_zstd() {
+	clear
+	banner
+	echo " "
+	echo "choose which file you wanted to decompress"
+	echo " "
+	file_selector $DIRIN ""
+	local filename=$FILE
+	
+	if [[ $(file $DIRIN/$filename | grep "data") != "" ]]; then
+		mv $DIRIN/$filename $DIRIN/$filename.zst
+		
+		echo " "
+		echo "Input $filename output name :"
+		read
+		local outputname=$REPLY
+		
+		echo " "
+		echo "Decompressing $filename (zstd)"
+		if $BIN/zstd -d $DIRIN/$filename.zst -o $DIROUT/$outputname; then
+		   rm -rf $DIRIN/$filename.*
+		   echo " "
+		   echo -e "${G}Done! Output : $DIROUT/$outputname ${NC}"
+		else
+		   echo -e "${R}Decompression Failed!"
+		   echo -e "${NC}"
+		fi
+	else
+		echo " "
+		echo -e "${R}File type is not data! aborting...${NC}"
+	fi	
+}
+
+unpack_ext4() {
+	mkdir -p $ext4dir
+	if [[ -d $ext4dir/$image ]]; then
+		echo "Folder named $image in $ext4dir exists, it will be deleted!"
+		echo "Move it somewhere first if its important"
+		echo "Press ENTER to confirm."
+		read
+		rm -rf $ext4dir/$image
+		rm -rf $ext4dir/config/$image
+	fi
+	echo ""
+	if $BIN/python39 $PYSCRIPTS/imgextractor.py $DIRIN/$image.img $WORKDIR/EXT4; then
+		chown -R $USER:$USER $WORKDIR/EXT4
+		echo ""
+		echo -e "${G}Output : $ext4dir/$image ${NC}"
+		rm -rf $DIRIN/$image.img
+	else
+		echo -e "${R}Unpacking failed!${NC}"
+	fi
+}
+
+unpack_erofs() {
+	mkdir -p $erofsdir
+	if [[ -d $erofsdir/$image ]]; then
+		echo "Folder named $image in $erofsdir exists, it will be deleted!"
+		echo "Move it somewhere first if its important"
+		echo "Press ENTER to confirm."
+		read
+		rm -rf $erofsdir/$image
+		rm -rf $erofsdir/config/${image}_*
+	fi
+	echo ""
+	if $BIN/erofs.unpack -i $DIRIN/$image.img -o $erofsdir -x; then
+		echo ""
+		echo -e "${G}Output : $erofsdir/$image ${NC}"
+		rm -rf $DIRIN/$image.img
+	else
+		echo -e "${R}Unpacking failed!${NC}"
+	fi
+}
+
+repack_ext4_cmd() {
+	local partition=$1
+	local SIZE=$2
+	$BIN/checkfsconfig $ext4dir/$partition $ext4dir/config/$partition/${partition}_fs_config
+	if [[ $partition == system ]] || [[ $partition == system_a ]] || [[ $partition == system_b ]]; then
+		local mountpoint=""
+	else
+		local mountpoint=$partition
+	fi
+	$BIN/make_ext4fs -J -T -1 \
+		-S "$ext4dir/config/$partition/${partition}_file_contexts" \
+		-C "$ext4dir/config/$partition/${partition}_fs_config" \
+		-l "$SIZE" \
+		-L "/$mountpoint" \
+		-a "/$partition" \
+		"$DIROUT/$partition.ext4.img" "$ext4dir/$partition"
+}
+
+repack_ext4_as_erofs_cmd() {
+	local partition=$1
+	local compression=$2
+	local legacy=$3
+	if [[ $legacy == "1" ]]; then
+		local other=" -E legacy-compress"
+	else
+		local other=""
+	fi
+
+	local context=$(head -n 1 $ext4dir/config/$partition/${partition}_file_contexts | $BIN/awk '{print $2}') 
+	sed -i "/([/].*)? /d" $ext4dir/config/$partition/${partition}_file_contexts
+	sed -i "1i / $context\n/$partition $context\n/$partition/ $context" $ext4dir/config/$partition/${partition}_file_contexts
+	sed -i "1i / 0 0 0755\n${partition}/ 0 0 0755" $ext4dir/config/$partition/${partition}_fs_config
+	$BIN/checkfsconfig $ext4dir/$partition $ext4dir/config/$partition/${partition}_fs_config
+	$BIN/mkfs.erofs${other} \
+	   -z${compression} \
+	   -T $(date +%s) \
+	   --workers=$(nproc --all) \
+	   --mount-point="/$partition" \
+	   --fs-config-file="$ext4dir/config/$partition/${partition}_fs_config" \
+	   --file-contexts="$ext4dir/config/$partition/${partition}_file_contexts" \
+	   "$DIROUT/$partition.erofs.img" "$ext4dir/$partition/"
+}
+
+repack_erofs_as_ext4_cmd() {
+	local partition=$1
+	local SIZE=$2
+	$BIN/checkfsconfig $erofsdir/$partition $erofsdir/config/${partition}_fs_config
+	if [[ $partition == system ]] || [[ $partition == system_a ]] || [[ $partition == system_b ]]; then
+		local mountpoint=""
+	else
+		local mountpoint=$partition
+	fi
+	$BIN/make_ext4fs -J -T -1 \
+		-S "$erofsdir/config/${partition}_file_contexts" \
+		-C "$erofsdir/config/${partition}_fs_config" \
+		-l "$SIZE" \
+		-L "/$mountpoint" \
+		-a "/$partition" \
+		"$DIROUT/$partition.ext4.img" "$erofsdir/$partition"
+}
+
+repack_erofs_cmd() {
+	local partition=$1
+	local compression=$2
+	local legacy=$3
+	if [[ $legacy == "1" ]]; then
+		local other=" -E legacy-compress"
+	else
+		local other=""
+	fi
+	
+	$BIN/checkfsconfig $erofsdir/$partition $erofsdir/config/${partition}_fs_config
+	$BIN/mkfs.erofs${other} \
+	   -z${compression} \
+	   -T $(date +%s) \
+	   --workers=$(nproc --all) \
+	   --mount-point="/$partition" \
+	   --fs-config-file="$erofsdir/config/${partition}_fs_config" \
+	   --file-contexts="$erofsdir/config/${partition}_file_contexts" \
+	   "$DIROUT/$partition.erofs.img" "$erofsdir/$partition/"
+}
+
+unpack_ext4_erofs_img() {
+	clear
+	banner
+	echo " "
+	echo "choose which image you wanted to unpack"
+	echo " "
+	file_selector $DIRIN ".img" "Unpack all .img shown above"
+	for image in $FILE; do
+	   if [[ $($BIN/blkid -o value -s TYPE $DIRIN/$image.img) == ext4 ]]; then
+	       unpack_ext4
+	   elif [[ $($BIN/blkid -o value -s TYPE $DIRIN/$image.img) == "" ]]; then
+	       unpack_erofs
+	   else
+	       echo ""
+	       echo -e "${R}$image.img fs type is not ext4/erofs!"
+	       echo -e "${NC}"
+	   fi
+	done
+}
+
+repack_ext4_img_foldersize() {
+	clear
+	banner
+	echo " "
+	echo "choose which partition you wanted to repack"
+	echo " "
+	extracted_partition_selector $WORKDIR/EXT4 "Repack all images shown"
+	for image in $FOLDER; do
+	   if [[ -d $ext4dir/$image ]]; then
+		echo ""
+		echo "- Repacking $image..."
+		echo ""
+		local foldersize=$(du -s -B1 $ext4dir/$image | $BIN/awk '{print $1}')
+		local SIZE=$(($foldersize + $foldersize * 1/10))
+		if (( $SIZE < 1474560 )); then
+		    local SIZE=`du -sk $ext4dir/$image | $BIN/awk '{$1*=1024;$1=int($1*8);printf $1}'`
+		fi
+		if repack_ext4_cmd $image $SIZE; then
+		   resize_img $DIROUT/$image.ext4.img smallest
+		   echo ""
+		   echo -e "${G}Repack done..."
+		   echo -e "Output : $DIROUT/$image.ext4.img ${NC}"
+		else
+		   echo ""
+		   echo -e "${R}Repack Failed!"
+		   echo -e "${NC}"
+		fi
+	   fi
+	done
+}
+
+repack_ext4_img_freespace() {
+	clear
+	banner
+	echo " "
+	echo "choose which partition you wanted to repack"
+	echo " "
+	extracted_partition_selector $WORKDIR/EXT4
+	local image=$FOLDER
+	if [[ -d $ext4dir/$image ]]; then
+		echo " "
+		echo "Input $image free space in mb (megabytes) :"
+		read
+		local FREESPACE=$REPLY
+		echo ""
+		echo "- Repacking $image..."
+		echo ""
+		local foldersize=$(du -s -B1 $ext4dir/$image | $BIN/awk '{print $1}')
+		local SIZE=$(($foldersize + $foldersize * 1/10))
+		if (( $SIZE < 1474560 )); then
+		    local SIZE=`du -sk $ext4dir/$image | $BIN/awk '{$1*=1024;$1=int($1*8);printf $1}'`
+		fi
+		if repack_ext4_cmd $image $SIZE; then
+		   resize_img $DIROUT/$image.ext4.img freespace
+		   echo ""
+		   echo -e "${G}Repack done..."
+		   echo -e "Output : $DIROUT/$image.ext4.img ${NC}"
+		else
+		   echo ""
+		   echo -e "${R}Repack Failed!"
+		   echo -e "${NC}"
+		fi
+	fi
+}
+
+repack_ext4_img_samesize() {
+	clear
+	banner
+	echo " "
+	echo "choose which partition you wanted to repack"
+	echo " "
+	extracted_partition_selector $WORKDIR/EXT4 "Repack all images shown"
+	for image in $FOLDER; do
+	   if [[ -d $ext4dir/$image ]]; then
+		echo ""
+		echo "- Repacking $image..."
+		echo ""
+		local SIZE=$(cat $ext4dir/config/$image/${image}_size.txt)
+		if (( $SIZE < 1474560 )); then
+		    local SIZE=`du -sk $ext4dir/$image | $BIN/awk '{$1*=1024;$1=int($1*8);printf $1}'`
+		fi
+		if repack_ext4_cmd $image $SIZE; then
+		   echo ""
+		   echo -e "${G}Repack done..."
+		   echo -e "Output : $DIROUT/$image.ext4.img ${NC}"
+		else
+		   echo ""
+		   echo -e "${R}Repack Failed!"
+		   echo -e "${NC}"
+		fi
+	   fi
+	done
+}
+
+repack_ext4_img_inputsize() {
+	clear
+	banner
+	echo " "
+	echo "choose which partition you wanted to repack"
+	echo " "
+	extracted_partition_selector $WORKDIR/EXT4
+	local image=$FOLDER
+	if [[ -d $ext4dir/$image ]]; then
+		echo " "
+		echo "Input partition size in bytes :"
+		read
+		local SIZE=$REPLY
+		if (( $SIZE < 1474560 )); then
+		    local SIZE=`du -sk $ext4dir/$image | $BIN/awk '{$1*=1024;$1=int($1*8);printf $1}'`
+		fi
+		echo ""
+		echo "- Repacking $image..."
+		echo ""
+		if repack_ext4_cmd $image $SIZE; then
+		   echo ""
+		   echo -e "${G}Repack done..."
+		   echo -e "Output : $DIROUT/$image.ext4.img ${NC}"
+		else
+		   echo ""
+		   echo -e "${R}Repack Failed!"
+		   echo -e "${NC}"
+		fi
+	fi
+}
+
+repack_erofs() {
+	clear
+	banner
+	echo " "
+	echo "choose which partition you wanted to repack"
+	echo " "
+	extracted_partition_selector $erofsdir
+	local image=$FOLDER
+	if [[ -d $erofsdir/$image ]]; then
+		while true; do
+		    echo "Compiling erofs image for old kernel? (Y/N)"
+		    read yn
+		    case $yn in
+			[Yy]* ) 
+			local legacy=1 
+			break;;
+			[Nn]* ) 
+			local legacy=0 
+			break;;
+			* ) echo "Please answer yes or no.";;
+		    esac
+		done
+		
+		while true; do
+		   echo " "
+		   echo "Choose compressor : "
+		   echo " "
+		   echo "1. lz4"
+		   echo "2. lz4hc"
+		   echo "3. lzma"
+		   echo "4. deflate"
+			    
+		   echo ""; read choose
+		   case $choose in
+			    
+			1 ) 
+			local compressor=lz4
+			break;;
+
+			2 ) 
+			local compressor=lz4hc
+			break;;
+			
+			3 )
+			local compressor=lzma
+			break;;
+			
+			4 ) 
+			local compressor=deflate
+			break;;
+
+			* ) echo "please choose one!";;
+		   esac
+		done
+		
+		case $compressor in
+		   "lz4" )
+		      local compression=lz4
+		   ;;
+		   
+		   "lz4hc" )
+		      echo ""
+		      echo "Input erofs compression level (0-12, default is 9)"
+		   ;;
+		   
+		   "lzma" )
+		      echo ""
+		      echo "Input erofs compression level (0-9,100-109. 0-9=normal, 100-109=extreme, default is 6)"
+		   ;;
+		   
+		   "deflate" )
+		      echo ""
+		      echo "Input erofs compression level (0-9, default is 1)"
+		   ;;
+		esac
+		
+		if [[ $compressor != "lz4" ]]; then
+		   echo "Leave it empty if you want the default compression"
+		   read
+		   local erofscomplvl=$REPLY
+		   if [[ $erofscomplvl == "" ]]; then
+		      local compression=${compressor}
+		   else
+		      local compression=${compressor},${erofscomplvl}
+		   fi
+		fi
+		
+		echo " "
+		echo "- Repacking $image..."
+		echo ""
+		if repack_erofs_cmd $image $compression $legacy; then
+		   echo ""
+		   echo -e "${G}Repack done..."
+		   echo -e "Output : $DIROUT/$image.erofs.img ${NC}"
+		else
+		   echo ""
+		   echo -e "${R}Repack Failed!"
+		   echo -e "${NC}"
+		fi
+	fi
+}
+
+convert_ext4_erofs_s() {
+	clear
+	banner
+	echo " "
+	echo "choose which image you wanted to convert to erofs"
+	echo " "
+	file_selector $DIRIN ".img"
+	for image in $FILE; do
+	   if [[ $($BIN/blkid -o value -s TYPE $DIRIN/$image.img) == ext4 ]]; then
+	      convert_ext4_erofs
+	   else
+	      echo ""
+	      echo -e "${R}$image.img fs type is $($BIN/blkid -o value -s TYPE $DIRIN/$image.img), aborting..."
+	      echo -e "${NC}"
+	   fi
+	done
+	restart_tool
+}
+
+convert_erofs_ext4_s() {
+	clear
+	banner
+	echo " "
+	echo "choose which image you wanted to convert to ext4"
+	echo " "
+	file_selector $DIRIN ".img" "Convert all image shown above to ext4"
+	for image in $FILE; do
+	   if [[ $($BIN/blkid -o value -s TYPE $DIRIN/$image.img) == "" ]]; then
+	      convert_erofs_ext4
+	   else
+	      echo ""
+	      echo -e "${R}$image.img fs type is $($BIN/blkid -o value -s TYPE $DIRIN/$image.img), aborting..."
+	      echo -e "${NC}"
+	   fi
+	done
+	restart_tool
+}
+
+sparsechunk_converter() {
+	clear
+	banner
+	echo ""
+	echo "Input sparsechunk name:"
+	echo 'example.. sparsechunk name is "super.img_sparsechunk.0-12", write "super.img_sparsechunk" here'
+	read
+	local SPARSECHUNK=$REPLY
+	
+	if [[ -f $DIRIN/$SPARSECHUNK.0 ]]; then
+	   echo ""
+	   echo "Converting sparsechunk image into raw image"
+	   $BIN/simg2img $DIRIN/$SPARSECHUNK.* $DIROUT/super.img
+	   rm -rf $DIRIN/$SPARSECHUNK.*
+	   if [[ -f $DIROUT/super.img ]]; then
+	       echo -e "${G}Done! Output : $DIROUT/super.img ${NC}"
+	   else
+	       echo -e "${R}Conversion Failed!"
+	       echo -e "${NC}"
+	   fi
+	else
+	  echo -e "${R}No sparsechunk with the name of $SPARSECHUNK in input ${NC}"
+	fi
+}
+
+mount_imgs() {
+	local OPTIONS=$1
+	clear
+	local images=$(ls -l $WORKDIR | grep -v '^d' | grep .img | $BIN/awk '{print $8}' | busybox sed 's/\.img$//')
+	for partition in $images; do
+		mkdir -p $WORKDIR/$partition
+		mount -t ext4 -o $OPTIONS $WORKDIR/${partition}.img $WORKDIR/$partition > /dev/null 2>&1
+		give_perm $partition
+	done
+}
+
+mount_resize() {
+	clear
+	local images=$(ls -l $WORKDIR | grep -v '^d' | grep .img | $BIN/awk '{print $8}' | busybox sed 's/\.img$//')
+	echo $images anj
+	resize_img_to_edit(){
+		local getsize=$(ls -nl $WORKDIR/${valset}.img | $BIN/awk '{print $5}')
+		local readmb=$(($getsize / 100000000))
+		local readgiga=$(($getsize / 1000000000))
+		local cval=$(($readmb - $readgiga))
+		if [[ $cval -gt 5 ]]; then
+			local vplus=2;
+		else
+			local vplus=1;
+		fi
+		local sizeimg=$(($readgiga + $vplus))G
+		fallocate -l $sizeimg $WORKDIR/${valset}.img
+		$BIN/e2fsck -yf $WORKDIR/${valset}.img
+		$BIN/resize2fs $WORKDIR/${valset}.img $sizeimg
+		$BIN/e2fsck -yf $WORKDIR/${valset}.img
+	}
+
+	echo " "
+	echo "Resizing partitions..."
+
+	for valset in $images; do
+		resize_img_to_edit
+	done
+
+	echo " "
+	echo "Mounting partitions..."
+	for partition in $images; do
+		mkdir -p $WORKDIR/$partition
+		mount -t ext4 -o loop $WORKDIR/${partition}.img $WORKDIR/$partition > /dev/null 2>&1
+		give_perm $partition
+	done
+}
+
+umount_resize_freespace() {
+	clear
+	local images=$(ls -l $WORKDIR | grep -v '^d' | grep .img | $BIN/awk '{print $8}' | busybox sed 's/\.img$//')
+	resize_to_build(){
+		$BIN/e2fsck -yf $WORKDIR/${valset}.img > /dev/null 2>&1
+		$BIN/resize2fs -M $WORKDIR/${valset}.img > /dev/null 2>&1
+		$BIN/e2fsck -yf $WORKDIR/${valset}.img > /dev/null 2>&1
+				
+		vsizenow=$(ls -nl $WORKDIR/${valset}.img | $BIN/awk '{print $5}')
+		sizeimg=$((($vsizenow + ${FREESPACE}000000)/1000))K
+		$BIN/resize2fs $WORKDIR/${valset}.img $sizeimg > /dev/null 2>&1
+		$BIN/e2fsck -yf $WORKDIR/${valset}.img > /dev/null 2>&1
+	}
+
+	echo " "
+	echo "Input partition that you want to unmount :"
+	file_selector $WORKDIR ".img"
+	local PARTITION=$(echo $FILE | busybox sed 's/\.img$//')
+		
+	echo " "
+	echo "Input partition free space in mb (megabytes) :"
+	read
+	local FREESPACE=$REPLY
+			
+	echo " "
+	echo "Unmounting $PARTITION..."
+	echo " "
+	restore_perm $PARTITION > /dev/null 2>&1
+	umount $WORKDIR/$PARTITION > /dev/null 2>&1
+	rm -rf $WORKDIR/$PARTITION
+
+	echo "Resizing $PARTITION..."
+	echo " "
+	local valset=$PARTITION
+	resize_to_build
+}
+
+umount_resize() {
+	clear
+	local images=$(ls -l $WORKDIR | grep -v '^d' | grep .img | $BIN/awk '{print $8}' | busybox sed 's/\.img$//')
+	resize_to_build(){
+		$BIN/e2fsck -yf $WORKDIR/${valset}.img
+		$BIN/resize2fs -M $WORKDIR/${valset}.img
+		$BIN/e2fsck -yf $WORKDIR/${valset}.img
+	}
+	echo " "
+	echo "Unmounting partitions..."
+	echo " "
+	for partition in $images; do
+	   restore_perm $partition > /dev/null 2>&1
+	   umount $WORKDIR/$partition > /dev/null 2>&1
+	   rm -rf $WORKDIR/$partition
+	done
+
+	echo "Resizing partitions..."
+	echo " "
+	# Resize image to minimum
+	for valset in $images; do
+	  resize_to_build > /dev/null 2>&1
+	done
+}
+	
+umount_normal() {
+	clear
+	echo " "
+	echo "Unmounting partitions..."
+	echo " "
+	local images=$(ls -l $WORKDIR | grep -v '^d' | grep .img | $BIN/awk '{print $8}' | busybox sed 's/\.img$//')
+	for partition in $images; do
+	   restore_perm $partition > /dev/null 2>&1
+ 	   umount $WORKDIR/$partition > /dev/null 2>&1
+ 	   rm -rf $WORKDIR/$partition
+	done
+}
+
+payload() {
+	clear
+	if [ -f $DIRIN/payload.bin ]; then
+		$BIN/payload -o $DIROUT -c $(nproc --all) $DIRIN/payload.bin
+
+		echo " "
+		echo "cleaning..."
+
+		rm -rf $DIRIN/payload.bin
+
+		echo " "
+		echo -e "Done! Output : $DIROUT ${NC}"
+	else
+		echo -e "${R}there's no payload.bin in $DIRIN"
+		echo -e "${NC}"
+	fi
+}
+
+custom_scripts() {
+	clear
+	banner
+	echo ""
+	echo "Choose which script to run :"
+	ls -1 $DIRSCRIPTS/custom_scripts | $BIN/awk '{print NR ".", $0}'
+	echo "x. Back to main menu"
+	read
+	local CHOOSE=$REPLY
+	if [[ $CHOOSE == "x" ]]; then
+	   start_tools
+	elif [[ $CHOOSE == "" ]]; then
+	   custom_scripts
+	else
+	   SCRIPT=$(ls -1 $DIRSCRIPTS/custom_scripts | $BIN/awk '{print NR ".", $0}' | grep -E "\b${CHOOSE}.(\s|$)" | $BIN/awk '{print $2}')
+	   exec $DIRSCRIPTS/custom_scripts/$SCRIPT
+	fi
+}
+
+raw_sparse() {
+	clear
+	banner
+	echo " "
+	echo "choose which image you wanted to convert to sparse img"
+	echo " "
+	file_selector $DIRIN ".img"
+	local imgname=$FILE
+
+	if [ -f $DIRIN/$imgname.img ]; then
+		echo " "
+		echo "Converting raw image to sparse..."
+
+		if $BIN/img2simg $DIRIN/$imgname.img $DIROUT/$imgname.sparse.img; then
+		   echo " "
+		   rm -rf $DIRIN/$imgname.img
+		   echo -e "${G}Done! Output : $DIROUT/$imgname.sparse.img ${NC}"
+		else
+		   echo -e "${R}Conversion Failed!"
+		   echo -e "${NC}"
+		fi
+	fi
+}
+
+raw_datbr() {
+	clear
+	banner
+	echo " "
+	echo "choose which image you wanted to compress"
+	echo " "
+	file_selector $DIRIN ".img"
+	local imgname=$FILE
+
+	if [ -f $DIRIN/$imgname.img ]; then
+		echo " "
+		echo "Input brotli compression level (0-11) :"
+		read
+		local COMPLVL=$REPLY
+
+		echo " " 
+		echo "converting image : $imgname to sparse"
+		$BIN/img2simg $DIRIN/$imgname.img $DIRIN/$imgname.sparse.img > /dev/null 2>&1
+		rm -rf $DIRIN/$imgname.img
+
+		echo " " 
+		echo "converting image : $imgname to new.dat"
+		$BIN/python39 $PYSCRIPTS/img2sdat.py $DIRIN/$imgname.sparse.img -o $DIOUT/ -v 4 -p $imgname > /dev/null 2>&1
+		rm -rf $DIRIN/$imgname.sparse.img
+
+		echo " " 
+		echo "compressing image : $imgname using brotli..."
+
+		$BIN/brotli -q $COMPLVL $DIROUT/$imgname.new.dat
+		echo " "
+		echo "cleaning..."
+
+		rm -rf $DIROUT/$imgname.new.dat
+		echo " "
+		if [[ -f $DIROUT/$imgname.new.dat.br ]]; then
+		   echo -e "Done! Output : $DIROUT/$imgname.new.dat.br ${NC}"
+		else
+		   echo -e "${R}Decompression Failed!"
+		   echo -e "${NC}"
+		fi
+	fi
+}
+
+inc_dynamic_compress() {
+	clear
+	while true; do
+	echo "Make sure you have already put the partitions you want to compress to input folder"
+	echo "and remove/move partitions that you dont want to compress from input folder"
+	echo "Type y/Y to continue, x/X to go back"
+	echo ""; read yn
+	case $yn in
+		[Yy]* ) 
+		break;;
+		[Xx]* ) 
+		start_tools;;   
+		* ) echo "please choose y or x";;
+		esac
+	done
+
+	local dynamic_part_op_list=$DIROUT/dynamic_partitions_op_list
+	local updater_script=$DIROUT/updater-script
+	local inc_dynamic_imgs=$(ls -l $DIRIN/ | grep -v '^d' | grep .img | $BIN/awk '{print $8}' | busybox sed 's/\.img$//' | busybox sed '/^$/d')
+
+	echo ""
+	echo "Reading configurations from $DIRSCRIPTS/incremental_dynamic.conf..."
+	local SUPERSIZE=$(getvalue SUPER_SIZE $DIRSCRIPTS/incremental_dynamic.conf)
+	local ACTIVESLOT=$(getvalue ACTIVE_SLOT $DIRSCRIPTS/incremental_dynamic.conf)
+	local GROUPTABLE=$(getvalue GROUP_TABLE $DIRSCRIPTS/incremental_dynamic.conf)
+	echo "Max Super partition size: ${SUPERSIZE}"
+	echo "Group table: ${GROUPTABLE}"
+	echo "Active Slot: ${ACTIVESLOT}"
+
+	if [[ $ACTIVESLOT == "a" ]]; then
+		local EMPTYSLOT=b
+	elif [[ $ACTIVESLOT == "b" ]]; then
+		local EMPTYSLOT=a
+	elif [[ $ACTIVESLOT == "" ]]; then
+		echo "A Only Device detected"
+	else
+		echo -e "${R}What??? slot ${ACTIVESLOT}???${NC}"
+		restart_tool
+	fi
+
+	generate_op_list() {
+		echo "Generating dynamic_partitions_op_list..."
+		if [[ $ACTIVESLOT != "" ]]; then
+			echo "# Remove all existing dynamic partitions and groups before applying full OTA" > $dynamic_part_op_list
+			echo "remove_all_groups" >>  $dynamic_part_op_list
+			echo "# Add group ${GROUPTABLE}_${ACTIVESLOT} with maximum size ${SUPERSIZE}" >> $dynamic_part_op_list
+			echo "add_group ${GROUPTABLE}_${ACTIVESLOT} ${SUPERSIZE}" >> $dynamic_part_op_list
+			echo "# Add group ${GROUPTABLE}_${EMPTYSLOT} with maximum size ${SUPERSIZE}" >> $dynamic_part_op_list
+			echo "add_group q${GROUPTABLE}_${EMPTYSLOT} ${SUPERSIZE}" >> $dynamic_part_op_list
+			
+			for partition in $(echo $inc_dynamic_imgs); do
+			   if [[ -f $DIRIN/$partition.img ]]; then
+			      echo "# Add partition ${partition}_${ACTIVESLOT} to group ${GROUPTABLE}_${ACTIVESLOT}" >> $dynamic_part_op_list
+			      echo "add ${partition}_${ACTIVESLOT} ${GROUPTABLE}_${ACTIVESLOT}" >> $dynamic_part_op_list
+			      echo "# Add partition ${partition}_${EMPTYSLOT} to group ${GROUPTABLE}_${EMPTYSLOT}" >> $dynamic_part_op_list
+			      echo "add ${partition}_${EMPTYSLOT} ${GROUPTABLE}_${EMPTYSLOT}" >> $dynamic_part_op_list
+			   fi
+			done
+			for partition in $(echo $inc_dynamic_imgs); do
+			   if [[ -f $DIRIN/$partition.img ]]; then
+			      local partitionsize=$(ls -nl $DIRIN/$partition.img | $BIN/awk '{print $5}')
+			      echo "# Grow partition ${partition}_${ACTIVESLOT} from 0 to $partitionsize" >> $dynamic_part_op_list
+			      echo "resize ${partition}_${ACTIVESLOT} $partitionsize" >> $dynamic_part_op_list
+			   fi
+			done
+		else
+			echo "# Remove all existing dynamic partitions and groups before applying full OTA" > $dynamic_part_op_list
+			echo "remove_all_groups" >>  $dynamic_part_op_list
+			echo "# Add group ${GROUPTABLE} with maximum size ${SUPERSIZE}" >>  $dynamic_part_op_list
+			echo "add_group ${GROUPTABLE} ${SUPERSIZE}" >>  $dynamic_part_op_list
+			
+			for partition in $(echo $inc_dynamic_imgs); do
+			   if [[ -f $DIRIN/$partition.img ]]; then
+			      echo "# Add partition $partition to group ${GROUPTABLE}" >>  $dynamic_part_op_list
+			      echo "add $partition ${GROUPTABLE}" >>  $dynamic_part_op_list
+			   fi
+			done
+			for partition in $(echo $inc_dynamic_imgs); do
+			   if [[ -f $DIRIN/$partition.img ]]; then
+			      local partitionsize=$(ls -nl $DIRIN/$partition.img | $BIN/awk '{print $5}')
+			      echo "# Grow partition $partition from 0 to $partitionsize" >>  $dynamic_part_op_list
+			      echo "resize ${partition} $partitionsize" >>  $dynamic_part_op_list
+			   fi
+			done
+		fi
+	}
+
+	generate_updater_script() {
+		echo "Generating updater-script..."
+		echo "assert(update_dynamic_partitions(package_extract_file("dynamic_partitions_op_list")));" > $updater_script
+		if [[ $ACTIVESLOT != "" ]]; then
+			for partition in $(echo $inc_dynamic_imgs); do
+				if [[ -f $DIRIN/$partition.img ]]; then
+					echo "" >> $updater_script
+					echo "ui_print(\"Flashing ${partition}_${ACTIVESLOT} partition...\");" >> $updater_script
+					echo "block_image_update(map_partition(\"${partition}_${ACTIVESLOT}\"), package_extract_file(\"${partition}.transfer.list\"), \"${partition}.new.dat.br\", \"${partition}.patch.dat\") ||" >> $updater_script
+					echo "  abort(\"E1001: Failed to flash ${partition}_${ACTIVESLOT} partition.\");" >> $updater_script
+					echo "" >> $updater_script
+				fi
+			done
+		else
+			for partition in $(echo $inc_dynamic_imgs); do
+				if [[ -f $DIRIN/$partition.img ]]; then
+					echo "" >> $updater_script
+					echo "ui_print(\"Flashing ${partition} files...\");" >> $updater_script
+					echo "block_image_update(map_partition(\"${partition}\"), package_extract_file(\"${partition}.transfer.list\"), \"${partition}.new.dat.br\", \"${partition}.patch.dat\") ||" >> $updater_script
+					echo "  abort(\"E1001: Failed to update ${partition} image.\");" >> $updater_script
+					echo "" >> $updater_script
+				fi
+			done
+		fi	
+	}
+
+	brotli_lvl() {
+		echo " "
+		echo "Input brotli compression level (0-11) :"
+		read
+		COMPLVL=$REPLY
+	}
+
+	sparse() {
+	    if [[ -f $DIRIN/$partition.img ]]; then
+	    	echo ""
+	    	echo "converting $partition into sparse"
+	    	$BIN/img2simg $DIRIN/$partition.img $DIRIN/$partition.sparse.img > /dev/null 2>&1
+	    	rm -rf $DIRIN/$partition.img
+	    else
+	    	echo " "
+	    	echo -e "${R}there's no $partition.img supplied! skipping...${NC}"
+	    fi
+	}
+
+	img2sdat() {
+	    if [[ -f $DIRIN/$partition.sparse.img ]]; then
+	    	echo " "
+	    	echo "converting $partition into new.dat"
+	    	$BIN/python39 $PYSCRIPTS/img2sdat.py $DIRIN/$partition.sparse.img -o $DIROUT/ -v 4 -p $partition > /dev/null 2>&1
+	    	rm -rf $DIRIN/$partition.sparse.img
+	    else
+	    	echo " "
+	    	echo -e "${R}there's no $partition.sparse.img supplied! skipping...${NC}"
+	    fi
+	}
+
+	datbr() {
+	    if [[ -f $DIROUT/$partition.new.dat ]]; then
+	    	echo " " 
+	    	echo "compressing $partition using brotli..."
+	    	$BIN/brotli -q $COMPLVL $DIROUT/$partition.new.dat
+	    	rm -rf $DIROUT/$partition.new.dat
+	    else
+	    	echo " "
+	    	echo -e "${R}there's no $partition.new.dat supplied! skipping...${NC}"
+	    fi
+	}
+
+	compress() {
+		echo "========================================="
+
+		for partition in $(echo $inc_dynamic_imgs); do
+		  sparse
+		done
+
+		echo " "
+		echo "========================================="
+
+		for partition in $(echo $inc_dynamic_imgs); do
+		  img2sdat
+		done
+
+		echo " "
+		echo "========================================="
+
+		for partition in $(echo $inc_dynamic_imgs); do
+		  datbr
+		done
+
+		echo " "
+		echo "========================================="
+		echo " "
+		echo -e "${G}Done! Output : $DIROUT ${NC}"
+
+	}
+		
+	local TOTALSIZE=$(ls -l $DIRIN/*.img 2>/dev/null | $BIN/awk 'NF {sum += $5} END {print sum+0}')
+
+	if (( $TOTALSIZE > $SUPERSIZE )); then
+		echo ""
+		echo -e "${R}Total size of all partitions exceeds max super size, aborting...${NC}"
+		echo -e "${R}($TOTALSIZE/$SUPERSIZE)${NC}"
+	else
+		echo ""
+		echo "Total size :"
+		echo -e "${G}($TOTALSIZE/$SUPERSIZE)${NC}"
+		brotli_lvl
+		echo ""
+		generate_op_list
+		generate_updater_script
+		echo ""
+		compress
+		rm -rf $DIRIN/*.sparse.img
+	fi
+}
+
+inc_dynamic_decompress() {
+	clear
+	local inc_dynamic_compressed_imgs=$(ls -l $DIRIN/ | grep -v '^d' | grep .new.dat.br | $BIN/blkid '{print $9}' | busybox sed 's/\.new.dat.br$//' | busybox sed '/^$/d')
+
+	datbr() {
+	    if [[ -f $DIRIN/$partition.new.dat.br ]]; then
+		echo " "
+		echo "Decompressing $partition using brotli..."
+		$BIN/brotli -d $DIRIN/$partition.new.dat.br
+		rm -rf $DIRIN/$partition.new.dat.br
+	    else
+	    	echo " "
+	    	echo -e "${R}there's no $partition.new.dat.br supplied! skipping...${NC}"
+	    fi
+	}
+
+	sdat2img() {
+	    if [[ -f $DIRIN/$partition.new.dat ]] && [[ -f $DIRIN/$partition.transfer.list ]]; then
+		echo " "
+		echo "Converting $partition.new.dat to $partition.img (raw)"
+		$BIN/python39 $PYSCRIPTS/sdat2img.py $DIRIN/$partition.transfer.list $DIRIN/$partition.new.dat $DIROUT/$partition.img > /dev/null 2>&1
+		rm -rf $DIRIN/$partition.*
+	    else
+	    	echo " "
+	    	echo -e "${R}there's no $partition.new.dat and/or $partition.transfer.list supplied! skipping...${NC}"
+	    fi
+	}
+
+	echo "========================================="
+
+	for partition in $(echo $inc_dynamic_compressed_imgs); do
+	  datbr
+	done
+
+	echo " "
+	echo "========================================="
+
+	for partition in $(echo $inc_dynamic_compressed_imgs); do
+	  sdat2img
+	done
+
+	echo " "
+	echo "========================================="
+	echo " "
+	echo -e "${G}Done! Output : $DIROUT ${NC}"
+}
+
+sparse_raw() {
+	clear
+	banner
+	echo " "
+	echo "choose which image you wanted to convert to raw img"
+	echo " "
+	file_selector $DIRIN ".img"
+	local imgname=$FILE
+	
+	if [ -f $DIRIN/$imgname.img ]; then
+		echo " "
+		echo "Converting sparse to raw image..."
+		if $BIN/simg2img $DIRIN/$imgname.img $DIROUT/$imgname.img > /dev/null 2>&1; then
+		   echo " "
+		   rm -rf $DIRIN/$imgname.img
+		   echo -e "${G}Done! Output : $DIROUT/$imgname.img ${NC}"
+		else
+		   echo -e "${R}Decompression Failed!"
+		   echo -e "${NC}"
+		fi
+	fi
+}
+
+super_u_raw() {
+	clear
+	banner
+	echo " "
+	echo "choose which super partition you wanted to extract"
+	echo " "
+	file_selector $DIRIN ".img"
+	local imgname=$FILE
+
+	if [ -f $DIRIN/$imgname.img ]; then
+		if [[ -d $superdir ]]; then
+			echo "Theres super extracted on $superdir, it will be deleted!"
+			echo "Move it somewhere first if its important"
+			echo "Press ENTER to confirm."
+			read
+			rm -rf $superdir
+		fi
+		echo " "
+		echo "Unpacking $imgname.img..."
+		mkdir -p $superdir/config
+		$BIN/lpdump --slot=0 $DIRIN/$imgname.img > $superdir/config/super_config.txt
+		$BIN/lpunpack $DIRIN/$imgname.img $WORKDIR/super
+		rm -rf $DIRIN/$imgname.*
+
+		echo " "
+		echo -e "${G}Done! Output : $WORKDIR/super ${NC}"
+	fi
+}
+	
+super_u_zstd() {
+	clear
+	banner
+	echo " "
+	echo "choose which super partition you wanted to extract"
+	echo " "
+	file_selector $DIRIN ""
+	local filename=$FILE
+	
+	if [[ $(file $DIRIN/$filename | grep "data") != "" ]]; then
+		if [[ -d $superdir ]]; then
+			echo "Theres super extracted on $superdir, it will be deleted!"
+			echo "Move it somewhere first if its important"
+			echo "Press ENTER to confirm."
+			read
+			rm -rf $superdir
+		fi
+		mv $DIRIN/$filename $DIRIN/$filename.zst
+		
+		echo " "
+		echo "Decompressing $filename (zstd)"
+		$BIN/zstd -d $DIRIN/$filename.zst -o $DIRIN/super.img
+		rm -rf $DIRIN/$filename.*
+
+		echo " "
+		echo "Unpacking super..."
+		mkdir -p $superdir/config
+		$BIN/lpdump --slot=0 $DIRIN/super.img > $superdir/config/super_config.txt
+		$BIN/lpunpack $DIRIN/super.img $WORKDIR/super
+		rm -rf $DIRIN/super.img
+
+		echo " "
+		echo -e "${G}Done! Output : $WORKDIR/super ${NC}"
+	else
+		echo " "
+		echo -e "${R}File type is not data! aborting...${NC}"
+	fi
+}
+
+super_u_datbr() {
+	clear
+	banner
+	echo " "
+	echo "choose which super partition you wanted to extract"
+	echo " "
+	file_selector $DIRIN ".new.dat.br"
+	local imgname=$FILE
+
+	if [ -f $DIRIN/$imgname.new.dat.br ]; then
+		if [[ -d $superdir ]]; then
+			echo "Theres super extracted on $superdir, it will be deleted!"
+			echo "Move it somewhere first if its important"
+			echo "Press ENTER to confirm."
+			read
+			rm -rf $superdir
+		fi
+		echo "Decompressing brotli..."
+		$BIN/brotli -d $DIRIN/$imgname.new.dat.br
+		rm -rf $DIRIN/$imgname.new.dat.br
+
+		echo " "
+		echo "Converting $imgname.new.dat to $imgname.img (raw)..."
+		$BIN/python39 $PYSCRIPTS/sdat2img.py $DIRIN/$imgname.transfer.list $DIRIN/$imgname.new.dat $DIROUT/$imgname.img > /dev/null 2>&1
+		rm -rf $DIRIN/$imgname.*
+
+		echo " "
+		echo "Unpacking $imgname.img..."
+		mkdir -p $superdir/config
+		$BIN/lpdump --slot=0 $DIROUT/$imgname.img > $superdir/config/super_config.txt
+		$BIN/lpunpack $DIROUT/$imgname.img $WORKDIR/super
+		rm -rf $DIROUT/$imgname.*
+
+		echo " "
+		echo -e "${G}Done! Output : $WORKDIR/super ${NC}"
+	fi
+}
+
+super_r() {
+	if [[ $(ls $superdir ) == "" ]]; then
+	    banner
+	    echo ""
+	    echo -e "${R}No super extracted!${NC}"
+	    restart_tool
+	fi
+	local meta_size=$(cat $superdir/config/super_config.txt | $BIN/awk '/Metadata max size:/ { print $4 }')
+	local meta_slot=$(cat $superdir/config/super_config.txt | $BIN/awk '/Metadata slot count:/ { print $4 }')
+	local first_sector=$(cat $superdir/config/super_config.txt | $BIN/awk '/First sector:/ { print ($3 * 512)}')
+	local group_table=$(cat $superdir/config/super_config.txt | grep -A10 "Group table:" | grep "Name:" | $BIN/awk '{ print $2 }' | busybox sed -n "2p")
+	local group_table2=$(cat $superdir/config/super_config.txt | grep -A10 "Group table:" | grep "Name:" | $BIN/awk '{ print $2 }' | busybox sed -n "3p")
+	local virtualAB=$(cat $superdir/config/super_config.txt | $BIN/awk '/Header flags:/ { print $3 }')
+	local size_super=$(cat $superdir/config/super_config.txt | $BIN/awk '/Size:/ { print $2 }')
+	local max_size_super=$(cat $superdir/config/super_config.txt | grep -A11 "Group table:" | grep "Maximum size:" | $BIN/awk '{ print $3 }' | busybox sed -n "2p")
+	local max_size_super2=$max_size_super
+
+	local TOTALSIZE=$(ls -l $superdir/*.img 2>/dev/null | $BIN/awk 'NF {sum += $5} END {print sum+0}')
+	
+	if [[ $virtualAB = "virtual_ab_device" ]]; then
+	    local virtualABOption="--virtual-ab "
+	else
+	    local virtualABOption=""
+	fi
+	
+	clear
+	echo " "
+	echo "Input Raw Super image name :"
+	read
+	local imgname=$REPLY
+	echo " "
+	while true; do
+	    echo "Your super raw img name is : $imgname is that correct? (Y/N)"
+	    read yn
+	    case $yn in
+		[Yy]* ) break;;
+		[Nn]* ) restart_tool;;
+		* ) echo "Please answer yes or no.";;
+	    esac
+	done
+	
+	while true; do
+	   echo ""
+	   echo "Compress image to :"
+	   echo "1. raw"
+	   echo "2. sparse"
+	   echo "3. new.dat"
+	   echo "4. dat.br"
+	   echo "5. zstd"
+	   echo ""; read choose
+	   case $choose in
+		[1]* ) 
+		local COMPRESSION=raw
+		break;;
+		[2]* )
+		local COMPRESSION=sparse
+		break;;
+		[3]* )
+		local COMPRESSION=dat
+		break;;
+		[4]* )
+		local COMPRESSION=br
+		echo " "
+		echo "Input brotli compression level (0-11) :"
+		read
+		local COMPLVL=$REPLY
+		break;;
+		[5]* )
+		local COMPRESSION=zstd
+		echo " "
+		echo "Input zstd suffix (leave it empty if you want .zst) :"
+		read
+		local ZSTDSUFFIX=.$REPLY
+		if [[ $ZSTDSUFFIX == "." ]]; then
+			local ZSTDSUFFIX=.zst
+		elif [[ $ZSTDSUFFIX == ". " ]]; then
+			local ZSTDSUFFIX=""
+		fi
+		echo " "
+		echo "Input zstd compression lvl (1-19) :"
+		read
+		local ZSTDLVL=$REPLY
+		break;;
+			
+		* ) echo "Please answer with one of the above selections.";;
+	   esac
+	done
+
+	if [[ $meta_slot == 1 ]] || [[ $meta_slot == 2 ]]; then
+		echo " "
+		echo "A only detected..."
+		echo "Compiling super with A only format"
+		echo " "
+
+		local part_list=$(busybox cat $superdir/config/super_config.txt | $BIN/awk '/Partition table:/,/Super partition layout:/ {if ($1=="Name:") print $2 }')
+		missing_imgs=()
+		for partition in $part_list; do
+			if [[ ! -f $superdir/$partition.img ]]; then
+				missing_imgs+=("$partition.img")
+			fi
+		done
+		if [[ ${#missing_imgs[@]} -ne 0 ]]; then
+			echo -e "${R}Missing images: ${missing_imgs[*]}${NC}"
+			echo "Add the missing images to super directory or remove the partition from super config"
+			restart_tool
+		fi
+		
+		if (( $TOTALSIZE > $max_size_super )); then
+			echo -e "${R}Total size of all partitions exceeds max super size, aborting...${NC}"
+			echo -e "${R}($TOTALSIZE/$max_size_super)${NC}"
+			echo ""
+			restart_tool
+		else
+			echo "Super total size :"
+			echo -e "${G}($TOTALSIZE/$max_size_super)${NC}"
+			echo ""
+			echo "Compiling super : $imgname.img (raw)..."
+			
+			echo "#!/system/bin/sh" > $DIRSCRIPTS/build_super
+			echo "$BIN/lpmake --metadata-size=$meta_size --super-name=super --metadata-slots=$meta_slot --device=super:$size_super:$first_sector --group=$group_table:$max_size_super '\'" >> $DIRSCRIPTS/build_super
+
+			for partition in $part_list; do
+				local partition_size=$(ls -nl $superdir/$partition.img | $BIN/awk '{print $5}')
+				echo "--partition=$partition:none:$partition_size:$group_table --image=$partition=$superdir/$partition.img '\'" >> $DIRSCRIPTS/build_super
+			done
+
+			echo "--output=$DIRIN/$imgname.img" >> $DIRSCRIPTS/build_super
+			echo "exit" >> $DIRSCRIPTS/build_super
+			
+			sed -i "s/[']//g" $DIRSCRIPTS/build_super
+			chmod 755 $DIRSCRIPTS/build_super
+			$DIRSCRIPTS/build_super
+			
+			rm -rf $DIRSCRIPTS/build_super
+		fi
+	elif [[ $meta_slot == 3 ]]; then
+		echo " "
+		echo "Virtual A/B detected..."
+		echo "Compiling super with Virtual A/B format"
+		echo " "
+		local slot_a_size=$(ls -l $superdir/*_a.img 2>/dev/null | $BIN/awk 'NF {sum += $5} END {print sum+0}')
+		local slot_b_size=$(ls -l $superdir/*_b.img 2>/dev/null | $BIN/awk 'NF {sum += $5} END {print sum+0}')
+		echo $slot_a_size
+		echo $slot_b_size
+		if (( $slot_a_size >> $slot_b_size )); then
+			echo "Active Slot: A (Auto Detected)"
+			echo " "
+			local slot=_a
+			local emptyslot=_b
+		else
+			echo "Active Slot: B (Auto Detected)"
+			echo " "
+			local slot=_b
+			local emptyslot=_a
+		fi
+
+		local ab_part_list=$(cat $superdir/config/super_config.txt | $BIN/awk '/Partition table:/,/Super partition layout:/ {if ($1=="Name:") print $2 }' | grep ${slot})
+		local ab_part_list_empty=$(cat $superdir/config/super_config.txt | $BIN/awk '/Partition table:/,/Super partition layout:/ {if ($1=="Name:") print $2 }' | grep ${emptyslot})
+		missing_imgs=()
+
+		for partition in $ab_part_list; do
+			if [[ ! -f $superdir/$partition.img ]]; then
+				missing_imgs+=("$partition.img")
+			fi
+		done
+		if [[ ${#missing_imgs[@]} -ne 0 ]]; then
+			echo -e "${R}Missing images: ${missing_imgs[*]}${NC}"
+			echo "Add the missing images to super directory or remove the partition from super config"
+			restart_tool
+		fi
+		
+		if (( $TOTALSIZE > $max_size_super )); then
+			echo -e "${R}Total size of all partitions exceeds max super size, aborting...${NC}"
+			echo -e "${R}($TOTALSIZE/$max_size_super)${NC}"
+			echo ""
+			restart_tool
+		else
+			echo "Super total size :"
+			echo -e "${G}($TOTALSIZE/$max_size_super)${NC}"
+			echo ""
+			echo "Compiling super : $imgname.img (raw)..."
+			
+			echo "#!/system/bin/sh" > $DIRSCRIPTS/build_super
+			if [[ $group_table2 != "" ]]; then
+				echo "$BIN/lpmake --metadata-size=$meta_size --super-name=super --metadata-slots=$meta_slot ${virtualABOption}--device=super:$size_super:$first_sector --group=$group_table:$max_size_super --group=$group_table2:$max_size_super2 '\'" >> $DIRSCRIPTS/build_super
+			else
+				echo "$BIN/lpmake --metadata-size=$meta_size --super-name=super --metadata-slots=$meta_slot ${virtualABOption}--device=super:$size_super:$first_sector --group=$group_table:$max_size_super '\'" >> $DIRSCRIPTS/build_super
+			fi
+			
+			for partition in $ab_part_list; do
+				local partition_size=$(ls -nl $superdir/$partition.img | $BIN/awk '{print $5}')
+				echo "--partition=$partition:none:$partition_size:$group_table --image=$partition=$superdir/$partition.img '\'" >> $DIRSCRIPTS/build_super
+			done
+			echo "--output=$DIRIN/$imgname.img" >> $DIRSCRIPTS/build_super
+			
+			if [[ $group_table2 != "" ]]; then
+				echo "touch $DIRIN/tmp.img" >> $DIRSCRIPTS/build_super
+				for emptypartition in $ab_part_list_empty; do
+				echo "lpadd $DIRIN/$imgname.img $emptypartition $group_table2 $DIRIN/tmp.img" >> $DIRSCRIPTS/build_super
+				done
+				echo "rm -rf $DIRIN/tmp.img" >> $DIRSCRIPTS/build_super
+			fi
+			echo "exit" >> $DIRSCRIPTS/build_super
+			
+			sed -i "s/[']//g" $DIRSCRIPTS/build_super
+			chmod 755 $DIRSCRIPTS/build_super
+			$DIRSCRIPTS/build_super
+			
+			rm -rf $DIRSCRIPTS/build_super
+		fi
+	else
+		echo -e "${R}Meta slot $meta_slot is not supported!"
+		echo -e "${NC}"
+	fi
+	
+	if [[ -f $DIRIN/$imgname.img ]]; then
+		rm -rf $superdir
+	fi
+	
+	case $COMPRESSION in
+	   "raw" )
+		echo " "
+		mv $DIRIN/$imgname.img $DIROUT/$imgname.img
+		if [[ -f $DIROUT/$imgname.img ]] && [[ $(ls -l $DIROUT/$imgname.img | $BIN/awk '{print $5}') != "0" ]]; then
+		   echo -e "${G}super build done! Output : $DIROUT/$imgname.img ${NC}"
+		else
+		   echo -e "${R}Build Failed!"
+		   echo -e "${NC}"
+		fi
+	   ;;
+		
+	   "sparse" )
+		echo " "
+		echo "Converting raw $imgname.img to sparse..."
+		$BIN/img2simg $DIRIN/$imgname.img $DIRIN/$imgname.sparse.img > /dev/null 2>&1
+		if [[ -f $DIRIN/$imgname.sparse.img ]] && [[ $(ls -l $DIRIN/$imgname.sparse.img | $BIN/awk '{print $5}') != "0" ]]; then
+		   rm -rf $DIRIN/$imgname.img
+		   mv $DIRIN/$imgname.sparse.img $DIROUT/$imgname.sparse.img
+		   echo -e "${G}super build done! Output : $DIROUT/$imgname.sparse.img ${NC}"
+		else
+		   echo -e "${R}Build Failed!"
+		   echo -e "${NC}"
+		fi
+	   ;;
+		
+	   "dat" )
+		echo " "
+		echo "Converting raw $imgname.img to sparse..."
+		$BIN/img2simg $DIRIN/$imgname.img $DIRIN/$imgname.sparse.img > /dev/null 2>&1
+		rm -rf $DIRIN/$imgname.img
+		
+		echo " "
+		echo "Converting $imgname.img (sparse) to $imgname.new.dat..."
+		$BIN/python39 $PYSCRIPTS/img2sdat.py $DIRIN/$imgname.sparse.img -o $DIROUT/ -v 4 -p $imgname > /dev/null 2>&1
+		rm -rf $DIRIN/$imgname.sparse.img
+		if [[ -f $DIROUT/$imgname.new.dat ]] && [[ $(ls -l $DIROUT/$imgname.new.dat | $BIN/awk '{print $5}') != "0" ]]; then
+		   echo -e "${G}super build done! Output : $DIROUT/$imgname.new.dat ${NC}"
+		else
+		   echo -e "${R}Build Failed!"
+		   echo -e "${NC}"
+		fi
+	   ;;
+	   
+	   "br" )
+		echo " "
+		echo "Converting raw $imgname.img to sparse..."
+		$BIN/img2simg $DIRIN/$imgname.img $DIRIN/$imgname.sparse.img > /dev/null 2>&1
+		rm -rf $DIRIN/$imgname.img
+		
+		echo " "
+		echo "Converting $imgname.img (sparse) to $imgname.new.dat..."
+		$BIN/python39 $PYSCRIPTS/img2sdat.py $DIRIN/$imgname.sparse.img -o $DIROUT/ -v 4 -p $imgname > /dev/null 2>&1
+		rm -rf $DIRIN/$imgname.sparse.img 
+		
+		echo " "
+		echo "Compressing to $imgname.new.dat.br..."
+		$BIN/brotli -q $COMPLVL $DIROUT/$imgname.new.dat
+		echo " "
+		if [[ -f $DIROUT/$imgname.new.dat.br ]] && [[ $(ls -l $DIROUT/$imgname.new.dat.br | $BIN/awk '{print $5}') != "0" ]]; then
+		   rm -rf $DIROUT/$imgname.new.dat
+		   echo -e "${G}super build done! Output : $DIROUT/$imgname.new.dat.br ${NC}"
+		else
+		   echo -e "${R}Build Failed!"
+		   echo -e "${NC}"
+		fi
+	   ;;
+	   
+	   "zstd" )
+		echo " "
+		echo "Compressing $imgname.img to ${imgname}$ZSTDSUFFIX (zstd)"
+		$BIN/zstd -${ZSTDLVL} -T$(nproc --all) $DIRIN/$imgname.img -o $DIROUT/${imgname}$ZSTDSUFFIX
+		echo " "
+		if [[ -f $DIROUT/${imgname}$ZSTDSUFFIX ]] && [[ $(ls -l $DIROUT/${imgname}$ZSTDSUFFIX | $BIN/awk '{print $5}') != "0" ]]; then
+		   rm -rf $DIRIN/$imgname.img
+		   echo -e "${G}super build done! Output : $DIROUT/${imgname}$ZSTDSUFFIX ${NC}"
+		else
+		   echo -e "${R}Build Failed!"
+		   echo -e "${NC}"
+		fi
+	   ;;
+	esac
+}
+
+install_tools() {
+   if mount -o remount,rw / ; then
+     ln -s $DIRTOOLS/start /system/bin/romtools
+     mount -o remount,ro /
+   else
+     echo -e "${R}Cannot link start script to /bin, system is not RW! start it manually from which dir you extracted the tool!"
+   fi
+}
+
+mount_main() {
+	while true; do
+	    banner
+	    echo " "
+		echo "put your images on $WORKDIR"
+		echo " "
+	    echo "1. Mount raw image and resize"
+	    echo "2. Mount without resizing"
+	    echo "3. Mount read only"
+	    echo "x. Back to main menu"
+	    
+	    echo ""; read choose
+	    case $choose in
+	    
+		1 ) 
+	mount_resize
+	restart_tool;;
+
+		2 ) 
+	mount_imgs "loop"
+	restart_tool;;
+
+		3 ) 
+	mount_imgs "ro,nosuid,nodev,relatime,uhelper=udisks2,loop"
+	restart_tool;;
+
+		x ) 
+	start_tools;;
+
+		* ) mount_main;;
+	    esac
+	done
+}
+
+convert_images_main() {
+	while true; do
+	    banner
+	    echo " "
+	    echo "1. EXT4 to EROFS"
+	    echo "2. EROFS to EXT4"
+	    echo "x. Back to main menu"
+	    
+	    echo ""; read choose
+	    case $choose in
+	    
+		1 ) 
+	convert_ext4_erofs_s
+	restart_tool;;
+
+		2 ) 
+	convert_erofs_ext4_s
+	restart_tool;;
+
+		x ) 
+	start_tools;;
+
+		* ) convert_images_main;;
+	    esac
+	done
+}
+
+umount_main() {
+	while true; do
+	    banner
+	    echo " "
+	    echo "1. Umount raw image and resize to smallest size"
+	    echo "2. Umount raw image and resize with free space "
+	    echo "3. Umount without resizing"
+	    echo "x. Back to main menu"
+	    
+	    echo ""; read choose
+	    case $choose in
+	    
+		1 ) 
+	umount_resize
+	restart_tool;;
+
+		2 ) 
+	umount_resize_freespace
+	restart_tool;;
+
+		3 ) 
+	umount_normal
+	restart_tool;;
+
+		x ) 
+	start_tools;;
+
+		* ) umount_main;;
+	    esac
+	done
+}
+
+mount_umount_main() {
+	while true; do
+	    banner
+	    echo " "
+	    echo "1. Mount images"
+	    echo "2. Umount Images"
+	    echo "x. Back to main menu"
+	    
+	    echo ""; read choose
+	    case $choose in
+	    
+		1 ) 
+	mount_main
+	restart_tool;;
+
+		2 ) 
+	umount_main
+	restart_tool;;
+	
+		x ) 
+	start_tools;;
+
+		* ) mount_umount_main;;
+	    esac
+	done
+}
+
+inc_dynamic_main() {
+	while true; do
+	    banner
+	    echo " "
+	    echo "1. Repack (raw to dat.br)"
+	    echo "2. Unpack"
+	    echo "x. Back to main menu"
+	    
+	    echo ""; read choose
+	    case $choose in
+	    
+		1 ) 
+	inc_dynamic_compress
+	restart_tool;;
+
+		2 ) 
+	inc_dynamic_decompress
+	restart_tool;;
+
+		x ) 
+	start_tools;;
+
+		* ) inc_dynamic_main;;
+	    esac
+	done
+}
+
+super_main() {
+	while true; do
+	    banner
+	    echo " "
+	    echo "1. Repack Super (raw, sparse, .dat, .br, zstd)"
+	    echo "2. Unpack Super (dat.br)"
+	    echo "3. Unpack Super (zstd)"
+	    echo "4. Unpack Super (raw)"
+	    echo "x. Back to main menu"
+	    
+	    echo ""; read choose
+	    case $choose in
+	    
+		1 ) 
+	super_r
+	restart_tool;;
+
+		2 ) 
+	super_u_datbr
+	restart_tool;;
+
+		3 ) 
+	super_u_zstd
+	restart_tool;;
+	
+		4 ) 
+	super_u_raw
+	restart_tool;;
+
+		x ) 
+	start_tools;;
+
+		* ) super_main;;
+	    esac
+	done
+}
+
+repack_ext4_erofs() {
+	while true; do
+	    banner
+	    echo " "
+	    echo "1. Repack EXT4 image with old image size"
+	    echo "2. Repack EXT4 image with folder size"
+	    echo "3. Repack EXT4 image with free space"
+	    echo "4. Repack EXT4 image and manually input size"
+	    echo "5. Repack EROFS image"
+	    echo "x. Back to main menu"
+	    
+	    echo ""; read choose
+	    case $choose in
+	    
+		1 ) 
+	repack_ext4_img_samesize
+	restart_tool;;
+
+		2 ) 
+	repack_ext4_img_foldersize
+	restart_tool;;
+	
+		3 )
+	repack_ext4_img_freespace
+	restart_tool;;
+	
+		4 ) 
+	repack_ext4_img_inputsize
+	restart_tool;;
+	
+		5 )
+	repack_erofs
+	restart_tool;;
+	
+		x ) 
+	start_tools;;
+
+		* ) repack_ext4_erofs;;
+	    esac
+	done
+}
+
+unpack_repack_main() {
+	while true; do
+	    banner
+	    echo " "
+	    echo "1. Repack EXT4/EROFS image"
+	    echo "2. Unpack EXT4/EROFS image"
+	    echo "x. Back to main menu"
+	    
+	    echo ""; read choose
+	    case $choose in
+	    
+		1 ) 
+	repack_ext4_erofs
+	restart_tool;;
+
+		2 ) 
+	unpack_ext4_erofs_img
+	restart_tool;;
+	
+		x ) 
+	start_tools;;
+
+		* ) unpack_repack_main;;
+	    esac
+	done
+}
+
+cd_cv_main() {
+	while true; do
+	    banner
+	    echo " "
+	    echo "1. Convert dat.br to raw img"
+	    echo "2. Convert raw .img to dat.br"
+	    echo "3. Convert raw to sparse"
+	    echo "4. Convert sparse to raw"
+	    echo "x. Back to main menu"
+	    
+	    echo ""; read choose
+	    case $choose in
+	    
+		1 ) 
+	datbr_raw
+	restart_tool;;
+
+		2 ) 
+	raw_datbr
+	restart_tool;;
+
+		3 ) 
+	raw_sparse
+	restart_tool;;
+	
+		4 )
+	sparse_raw
+	restart_tool;;
+
+		x ) 
+	start_tools;;
+
+		* ) cd_cv_main;;
+	    esac
+	done
+}
+
+zstd_main() {
+	while true; do
+	    banner
+	    echo " "
+	    echo "1. Compress zstd"
+	    echo "2. Decompress zstd"
+	    echo "x. Back to main menu"
+	    
+	    echo ""; read choose
+	    case $choose in
+	    
+		1 ) 
+	compress_zstd
+	restart_tool;;
+
+		2 ) 
+	decompress_zstd
+	restart_tool;;
+
+		x ) 
+	start_tools;;
+
+		* ) zstd_main;;
+	    esac
+	done
+}
+
+start_tools() {
+	setup
+	while : ; do
+	    banner
+	    echo " "
+	    echo "1. Super partition tools"
+	    echo "2. Incremental dynamic partition tools"
+	    echo "3. Convert or compress images"
+	    echo "4. Unpack or repack images"
+	    echo "5. Convert image types (ext4/erofs)"
+	    echo "6. Rebuild EXT4 Images (removes avb)"
+	    echo "7. Mount or Umount raw imgs"
+	    echo "8. Decompress Sparsechunk"
+	    echo "9. Unpack payload.bin"
+	    echo "10. Custom Scripts"
+	    echo "11. Zstd Tools"
+	    echo "c. Clean up folders"
+	    echo "i. Install tool"
+	    echo "x. Exit tool"
+	    
+	    echo ""; read choose
+	    case $choose in
+		1 ) 
+	super_main
+	restart_tool;;
+
+		2 ) 
+	inc_dynamic_main
+	restart_tool;;
+
+		3 ) 
+	cd_cv_main
+	restart_tool;;
+
+		4 ) 
+	unpack_repack_main
+	restart_tool;;
+
+		5 ) 
+	convert_images_main
+	restart_tool;;
+
+		6 ) 
+	rebuild_ext4_single
+	restart_tool;;
+
+		7 ) 
+	mount_umount_main
+	restart_tool;;
+	
+		8 )
+	sparsechunk_converter
+	restart_tool;;
+
+		9 ) 
+	payload
+	restart_tool;;
+
+		10 ) 
+	custom_scripts
+	restart_tool;;
+
+		11 ) 
+	zstd_main
+	restart_tool;;
+	
+		i ) 
+	install_tools
+	restart_tool;;
+
+		c ) 
+	clean
+	restart_tool;;
+
+		x )  
+	clear	
+	exit;;
+		* ) start_tools;;
+	    esac
+	done
+}

@@ -1,0 +1,4 @@
+#!/data/local/python39/usr/bin/python3.9
+# EASY-INSTALL-SCRIPT: 'binwalk==2.3.3','binwalk'
+__requires__ = 'binwalk==2.3.3'
+__import__('pkg_resources').run_script('binwalk==2.3.3', 'binwalk')

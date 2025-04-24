@@ -1,0 +1,19 @@
+#!/system/bin/sh
+
+script_dir="$(dirname "$(realpath "$0")")"
+
+export HOME=$script_dir/py/python39 
+export LD_LIBRARY_PATH=$script_dir/py/python39/usr/lib
+export SSL_CERT_FILE=$script_dir/py/python39/usr/etc/ssl/cert.pem
+export TERMINFO=$script_dir/py/python39/usr/share/terminfo
+export SHELL=$script_dir/py/python39/usr/bin/sh
+export CONFIG_SHELL=$script_dir/py/python39/usr/bin/sh
+export TMPDIR="$HOME"
+export PATH=$script_dir/py/python39/usr/bin
+LDSHARED="gcc -shared" CC=gcc $script_dir/py/python39/usr/bin/python3.9 "$@"
+
+
+
+
+
+ 
