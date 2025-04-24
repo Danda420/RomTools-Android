@@ -106,6 +106,7 @@ file_selector() {
 	      echo ""
 	   fi
 	   local nofilesfound=1
+	   echo "i. Input directory manually"
 	fi
 	if [[ $message != "" ]] && [[ $nofilesfound == 0 ]]; then
 	   echo "0. $message"
@@ -116,6 +117,13 @@ file_selector() {
 	if [[ $CHOOSE == "0" ]]; then
 	   clear
 	   FILE=$(ls -1 $selected_dir/*$file_extension | busybox sed 's:.*/::' | busybox sed "s/${file_extension}$//")
+	elif [[ $CHOOSE == "i" ]] && [[ $nofilesfound == 1 ]]; then
+	    clear
+	    banner
+	    echo "insert your preferred directory"
+	    read tmpdir
+	    export DIRIN=$tmpdir
+	    file_selector $DIRIN $file_extension "$message"
 	elif [[ $CHOOSE == "x" ]]; then
 	   start_tools
 	elif [[ $CHOOSE == "" ]]; then
