@@ -1549,6 +1549,12 @@ super_r() {
 	    echo -e "${R}No super extracted!${NC}"
 	    restart_tool
 	fi
+	if [[ $(cat $superdir/config/super_config.txt) == "" ]]; then
+		banner
+	    echo ""
+	    echo -e "${R}super_config.txt is not accessible or is empty!${NC}"
+	    restart_tool
+	fi
 	local meta_size=$(cat $superdir/config/super_config.txt | $BIN/awk '/Metadata max size:/ { print $4 }')
 	local meta_slot=$(cat $superdir/config/super_config.txt | $BIN/awk '/Metadata slot count:/ { print $4 }')
 	local first_sector=$(cat $superdir/config/super_config.txt | $BIN/awk '/First sector:/ { print ($3 * 512)}')
